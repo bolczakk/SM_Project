@@ -1,0 +1,15 @@
+# Build artifacts
+Debug/
+Release/
+*.elf
+*.bin
+*.map
+*.list
+
+.settings/
+.launch
+.metadata/
+
+# Inne
+*.o
+*.d
