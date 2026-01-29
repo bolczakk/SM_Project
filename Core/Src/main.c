@@ -24,7 +24,8 @@
 #include "pwm.h"
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
-#include "ds18b20.h"
+#include "sensors.h"
+#include "pid.h"
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -52,13 +53,13 @@ TIM_HandleTypeDef htim3;
 /* USER CODE BEGIN PV */
 
 PWM_Handle_TypeDef fan_pwm;
+PID_Controller fanPID;
 
 volatile float duty = 30.0f;
 volatile uint8_t need_update = 1;
 volatile uint32_t last_interrupt_time = 0;
-
-ds18b20_t ds18;
 volatile float temperature;
+float setpoint = 20.0f;
 
 /* USER CODE END PV */
 
@@ -83,12 +84,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
 	  if (current_time - last_interrupt_time > 200)
 	  {
-		  duty = duty + 10.0f;
-		  if(duty > 100.0f){
-			  duty = 20.0f;
+		  setpoint = setpoint + 1.0f;
+		  if(setpoint > 40.0f){
+			  setpoint = 20.0f;
 		  }
 
-		  need_update = 1;
 		  last_interrupt_time = current_time;
 	  }
   }
@@ -136,20 +136,8 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
-  ow_init_t ow_init_struct;
-  ow_init_struct.tim_handle = &htim2; // Twój timer
-  ow_init_struct.gpio = GPIOA;        // Port pinu
-  ow_init_struct.pin = GPIO_PIN_1;    // Numer pinu
-  ow_init_struct.tim_cb = NULL;       // Ustawiamy na NULL, bo używamy HAL_TIM_PeriodElapsedCallback
-  ow_init_struct.done_cb = NULL;
-  //ow_init_struct.rom_id_filter = DS18B20_ID;
-
-  ds18b20_init(&ds18, &ow_init_struct);
-  ds18b20_update_rom_id(&ds18); // Znajdź czujniki na linii
-
-  // Opcjonalna konfiguracja (rozdzielczość 12 bit)
-  ds18b20_config_t ds18_conf = { .alarm_high = 50, .alarm_low = -50, .cnv_bit = DS18B20_CNV_BIT_12 };
-  ds18b20_conf(&ds18, &ds18_conf);
+  Sensors_Init(&htim2);
+  PID_Init(&fanPID, 20.0f, 0.1f, 1.0f, 0.0f, 100.0f);
 
   ssd1306_Init();
 
@@ -158,17 +146,17 @@ int main(void)
   fan_pwm.Duty = duty;
 
   PWM_Init(&fan_pwm);
-
+  //nie zmieniac kolejnosci
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
 
-  ssd1306_Fill(Black);
-  ssd1306_SetCursor(5, 40);
-  ssd1306_WriteString("Duty: ", Font_7x10, White);
-  ssd1306_UpdateScreen();
+//  ssd1306_Fill(Black);
+//  ssd1306_SetCursor(5, 40);
+//  ssd1306_WriteString("Duty: ", Font_7x10, White);
+//  ssd1306_UpdateScreen();
 
   char bufor[32];
 
-  need_update = 1;
+  //need_update = 1;
 
   /* USER CODE END 2 */
 
@@ -176,27 +164,36 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  if (need_update == 1)
-	  {
-		  PWM_WriteDuty(&fan_pwm, duty);
 
-		  sprintf(bufor, "%d%%   ", (int)duty);
-		  ssd1306_SetCursor(50, 32);
-		  ssd1306_WriteString(bufor, Font_16x26, White);
+	  // 1. Odczyt temperatury (to może trwać do 750ms przy 12-bitach,
+	  // ale Twoja biblioteka obsługuje to nieblokująco/w tle)
+	  Sensors_Process();
+	  temperature = Sensors_GetTemperature();
 
-		  ssd1306_UpdateScreen();
+	  // 2. Oblicz nowe wypełnienie (dt musi odpowiadać opóźnieniu pętli)
+	  // Używamy 0.2f bo na końcu jest HAL_Delay(200)
+	  duty = PID_Compute(&fanPID, setpoint, temperature, 0.2f);
+	  PWM_WriteDuty(&fan_pwm, duty);
 
-		  need_update = 0;
-	  }
+	  // 3. Wyświetlanie
+	  ssd1306_Fill(Black);
 
-	  ds18b20_cnv(&ds18); // Rozpocznij konwersję
-	  while(ds18b20_is_busy(&ds18)); // Czekaj na koniec (nieblokujące, jeśli używasz RTOS)
+	  sprintf(bufor, "SET: %.1f C", setpoint);
+	  ssd1306_SetCursor(5, 5);
+	  ssd1306_WriteString(bufor, Font_7x10, White);
 
-	  ds18b20_req_read(&ds18); // Poproś o odczyt pierwszego czujnika (index 0)
-	  while(ds18b20_is_busy(&ds18));
+	  sprintf(bufor, "CUR: %.1f C", temperature);
+	  ssd1306_SetCursor(5, 20);
+	  ssd1306_WriteString(bufor, Font_7x10, White);
 
-	  temperature = ds18b20_read_c(&ds18); // Pobierz temp w Celsjuszach
-	  HAL_Delay(99);
+	  // Większy napis dla mocy wentylatora
+	  sprintf(bufor, "PWM: %d%%", (int)duty);
+	  ssd1306_SetCursor(20, 40);
+	  ssd1306_WriteString(bufor, Font_11x18, White);
+
+	  ssd1306_UpdateScreen();
+
+	  HAL_Delay(200);
 
     /* USER CODE END WHILE */
 
@@ -348,9 +345,9 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 71;
+  htim3.Init.Prescaler = 3;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 999;
+  htim3.Init.Period = 959;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
