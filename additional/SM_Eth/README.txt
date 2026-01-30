@@ -1,0 +1,1 @@
+Jest to projekt wgrany na STM NUCLEOF467ZI, aby odbierać dane po porcie szeregowym od STM32 BlackPill z mikrokontrolerem STM32F411CEU6 i wysyłać je przez UDP do serwera w JavaScript i umożliwić pogląd pomiarów i logowanie pomiarów.

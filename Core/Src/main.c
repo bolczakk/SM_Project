@@ -26,6 +26,7 @@
 #include "ssd1306_fonts.h"
 #include "sensors.h"
 #include "pid.h"
+#include <string.h>
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -50,6 +51,8 @@ I2C_HandleTypeDef hi2c1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 
+UART_HandleTypeDef huart1;
+
 /* USER CODE BEGIN PV */
 
 PWM_Handle_TypeDef fan_pwm;
@@ -60,6 +63,7 @@ volatile uint8_t need_update = 1;
 volatile uint32_t last_interrupt_time = 0;
 volatile float temperature;
 float setpoint = 20.0f;
+uint32_t transmit_counter = 0;
 
 /* USER CODE END PV */
 
@@ -69,6 +73,7 @@ static void MX_GPIO_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -134,6 +139,7 @@ int main(void)
   MX_TIM3_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
   Sensors_Init(&htim2);
@@ -155,7 +161,7 @@ int main(void)
 //  ssd1306_UpdateScreen();
 
   char bufor[32];
-
+  char uart_buf[64];
   //need_update = 1;
 
   /* USER CODE END 2 */
@@ -186,14 +192,22 @@ int main(void)
 	  ssd1306_SetCursor(5, 20);
 	  ssd1306_WriteString(bufor, Font_7x10, White);
 
-	  // Większy napis dla mocy wentylatora
 	  sprintf(bufor, "PWM: %d%%", (int)duty);
 	  ssd1306_SetCursor(20, 40);
 	  ssd1306_WriteString(bufor, Font_11x18, White);
 
 	  ssd1306_UpdateScreen();
 
-	  HAL_Delay(200);
+	  transmit_counter++;
+	  if (transmit_counter >= 25)
+	  {
+		  sprintf(uart_buf, "%05.2f;%05.2f;%03.0f\r\n", temperature, setpoint, duty);
+		  HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, 17, HAL_MAX_DELAY);
+
+		  transmit_counter = 0;
+	  }
+
+	  HAL_Delay(199);
 
     /* USER CODE END WHILE */
 
@@ -372,6 +386,39 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
+
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
 
 }
 
