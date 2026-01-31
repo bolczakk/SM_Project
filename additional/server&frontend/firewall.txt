@@ -1,4 +1,0 @@
-//Wyłącz firewalla
-
-Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True
-Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled False
