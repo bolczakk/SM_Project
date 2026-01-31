@@ -48,6 +48,7 @@
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
 
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 
@@ -59,11 +60,14 @@ PWM_Handle_TypeDef fan_pwm;
 PID_Controller fanPID;
 
 volatile float duty = 30.0f;
-volatile uint8_t need_update = 1;
 volatile uint32_t last_interrupt_time = 0;
 volatile float temperature;
-float setpoint = 20.0f;
+float setpoint = 25.0f;
 uint32_t transmit_counter = 0;
+_Bool manual = 0;
+
+unsigned int last_encoder_val = 0;
+
 
 /* USER CODE END PV */
 
@@ -72,8 +76,9 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_I2C1_Init(void);
-static void MX_TIM2_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -87,13 +92,9 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   {
 	  uint32_t current_time = HAL_GetTick();
 
-	  if (current_time - last_interrupt_time > 200)
+	  if (current_time - last_interrupt_time > 300)
 	  {
-		  setpoint = setpoint + 1.0f;
-		  if(setpoint > 40.0f){
-			  setpoint = 20.0f;
-		  }
-
+		  manual=!manual;
 		  last_interrupt_time = current_time;
 	  }
   }
@@ -103,6 +104,55 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
   if (htim->Instance == TIM2) {
     ow_callback(&ds18.ow);
   }
+}
+
+void renderScreen(char *bufor){
+	ssd1306_Fill(Black);
+	ssd1306_SetCursor(115, 0);
+	if (manual) {
+		ssd1306_WriteChar('M', Font_7x10, White);
+	} else {
+		ssd1306_WriteChar('A', Font_7x10, White);
+	}
+
+	if(manual){
+//		sprintf(bufor, "PWM: %d%%", (int)duty);
+//		ssd1306_SetCursor(5, 5);
+//		ssd1306_WriteString(bufor, Font_7x10, White);
+
+		sprintf(bufor, "CUR: %.1f C", temperature);
+		ssd1306_SetCursor(5, 5);
+		ssd1306_WriteString(bufor, Font_7x10, White);
+
+		sprintf(bufor, "PWM: %d%%", (int)duty);
+		ssd1306_SetCursor(20, 40);
+		ssd1306_WriteString(bufor, Font_11x18, White);
+
+		ssd1306_UpdateScreen();
+	}
+	else{
+		sprintf(bufor, "PWM: %d%%", (int)duty);
+		ssd1306_SetCursor(5, 5);
+		ssd1306_WriteString(bufor, Font_7x10, White);
+
+//		sprintf(bufor, "SET: %.1f C", setpoint);
+//		ssd1306_SetCursor(5, 5);
+//		ssd1306_WriteString(bufor, Font_7x10, White);
+
+		sprintf(bufor, "CUR: %.1f C", temperature);
+		ssd1306_SetCursor(5, 20);
+		ssd1306_WriteString(bufor, Font_7x10, White);
+
+		sprintf(bufor, "SET: %.1f C", setpoint);
+		ssd1306_SetCursor(5, 40);
+		ssd1306_WriteString(bufor, Font_11x18, White);
+
+//		sprintf(bufor, "PWM: %d%%", (int)duty);
+//		ssd1306_SetCursor(20, 40);
+//		ssd1306_WriteString(bufor, Font_11x18, White);
+
+		ssd1306_UpdateScreen();
+	}
 }
 
 /* USER CODE END 0 */
@@ -138,8 +188,9 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM3_Init();
   MX_I2C1_Init();
-  MX_TIM2_Init();
   MX_USART1_UART_Init();
+  MX_TIM2_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
 
   Sensors_Init(&htim2);
@@ -154,15 +205,10 @@ int main(void)
   PWM_Init(&fan_pwm);
   //nie zmieniac kolejnosci
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-
-//  ssd1306_Fill(Black);
-//  ssd1306_SetCursor(5, 40);
-//  ssd1306_WriteString("Duty: ", Font_7x10, White);
-//  ssd1306_UpdateScreen();
+  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
 
   char bufor[32];
   char uart_buf[64];
-  //need_update = 1;
 
   /* USER CODE END 2 */
 
@@ -170,36 +216,37 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  int32_t current_encoder_val = __HAL_TIM_GET_COUNTER(&htim1);
+	  if (current_encoder_val != last_encoder_val)
+	  {
+		  int16_t diff = (int16_t)(current_encoder_val - last_encoder_val);
+		  float step = (diff > 0) ? 1.0f : -1.0f;
 
-	  // 1. Odczyt temperatury (to może trwać do 750ms przy 12-bitach,
-	  // ale Twoja biblioteka obsługuje to nieblokująco/w tle)
+		  if (manual) {
+			  duty += step * 1.0f;
+			  if (duty > 100.0f) duty = 100.0f;
+			  if (duty < 0.0f)   duty = 0.0f;
+		  } else {
+			  setpoint += step * 0.5f;
+			  if (setpoint > 45.0f) setpoint = 45.0f;
+			  if (setpoint < 25.0f) setpoint = 25.0f;
+		  }
+		  last_encoder_val = current_encoder_val;
+	  }
+
 	  Sensors_Process();
 	  temperature = Sensors_GetTemperature();
 
-	  // 2. Oblicz nowe wypełnienie (dt musi odpowiadać opóźnieniu pętli)
-	  // Używamy 0.2f bo na końcu jest HAL_Delay(200)
-	  duty = PID_Compute(&fanPID, setpoint, temperature, 0.2f);
+	  if (!manual) {
+		  duty = PID_Compute(&fanPID, setpoint, temperature, 0.2f);
+	  }
+
 	  PWM_WriteDuty(&fan_pwm, duty);
 
-	  // 3. Wyświetlanie
-	  ssd1306_Fill(Black);
-
-	  sprintf(bufor, "SET: %.1f C", setpoint);
-	  ssd1306_SetCursor(5, 5);
-	  ssd1306_WriteString(bufor, Font_7x10, White);
-
-	  sprintf(bufor, "CUR: %.1f C", temperature);
-	  ssd1306_SetCursor(5, 20);
-	  ssd1306_WriteString(bufor, Font_7x10, White);
-
-	  sprintf(bufor, "PWM: %d%%", (int)duty);
-	  ssd1306_SetCursor(20, 40);
-	  ssd1306_WriteString(bufor, Font_11x18, White);
-
-	  ssd1306_UpdateScreen();
+	  renderScreen(bufor);
 
 	  transmit_counter++;
-	  if (transmit_counter >= 25)
+	  if (transmit_counter >= 50)
 	  {
 		  sprintf(uart_buf, "%05.2f;%05.2f;%03.0f\r\n", temperature, setpoint, duty);
 		  HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, 17, HAL_MAX_DELAY);
@@ -207,7 +254,7 @@ int main(void)
 		  transmit_counter = 0;
 	  }
 
-	  HAL_Delay(199);
+	  HAL_Delay(99);
 
     /* USER CODE END WHILE */
 
@@ -292,6 +339,56 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65535;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
 
 }
 
