@@ -1,0 +1,1 @@
+Serwer został zainstalowany u mnie na WSL więc może być problem z uruchomieniem go bezpośrednio na windows.
