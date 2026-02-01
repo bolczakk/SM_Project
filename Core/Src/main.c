@@ -86,6 +86,21 @@ static void MX_TIM1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+uint8_t Compute_CRC8(uint8_t *data, uint16_t len) {
+    uint8_t crc = 0x00;
+    for (uint16_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x80) {
+                crc = (crc << 1) ^ 0x07;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    return crc;
+}
+
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if(GPIO_Pin == BTN_Pin)
@@ -208,7 +223,8 @@ int main(void)
   HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
 
   char bufor[32];
-  char uart_buf[64];
+  char uart_payload[32];
+  char uart_final_frame[40];
 
   /* USER CODE END 2 */
 
@@ -246,12 +262,13 @@ int main(void)
 	  renderScreen(bufor);
 
 	  transmit_counter++;
-	  if (transmit_counter >= 50)
-	  {
-		  sprintf(uart_buf, "%05.2f;%05.2f;%03.0f\r\n", temperature, setpoint, duty);
-		  HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, 17, HAL_MAX_DELAY);
+	  if (transmit_counter >= 50) {
+	      int payload_len = sprintf(uart_payload, "%05.2f;%05.2f;%03.0f", temperature, setpoint, duty);
+	      uint8_t crc = Compute_CRC8((uint8_t*)uart_payload, payload_len);
+	      int final_len = sprintf(uart_final_frame, "%s;%02X\r\n", uart_payload, crc);
+	      HAL_UART_Transmit(&huart1, (uint8_t*)uart_final_frame, final_len, HAL_MAX_DELAY);
 
-		  transmit_counter = 0;
+	      transmit_counter = 0;
 	  }
 
 	  HAL_Delay(99);

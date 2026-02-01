@@ -54,7 +54,7 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 
-#define RX_LEN 17
+#define RX_LEN 20
 uint8_t rx_buffer[RX_LEN + 1];
 float t_rx, s_rx, d_rx;
 
@@ -76,33 +76,73 @@ static void MX_USART6_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-  if (huart->Instance == USART6)
-  {
-    if (sscanf((char*)rx_buffer, "%f;%f;%f", &t_rx, &s_rx, &d_rx) == 3)
-    {
-      char udp_msg[64];
-      int len = snprintf(
-          udp_msg,
-          sizeof(udp_msg),
-          "%.2f;%.2f;%.2f",
-          t_rx, s_rx, d_rx
-      );
+uint8_t Compute_CRC8(uint8_t *data, uint16_t len) {
+    uint8_t crc = 0x00;
+    for (uint16_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x80) {
+                crc = (crc << 1) ^ 0x07;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    return crc;
+}
 
-      struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
-      memcpy(p->payload, udp_msg, len);
-      udp_send(udp_client, p);
-      pbuf_free(p);
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  if (huart->Instance == USART6) {
+	  rx_buffer[RX_LEN] = '\0';
+    unsigned int received_crc;
+    char payload_to_check[32];
 
-      HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
+    // Format: "25.00;25.00;030;A1\r\n"
+    char *last_semicolon = strrchr((char*)rx_buffer, ';');
 
+    if (last_semicolon != NULL) {
+        // Obliczamy długość części z danymi (wszystko przed ostatnim średnikiem)
+        int data_len = last_semicolon - (char*)rx_buffer;
+
+        strncpy(payload_to_check, (char*)rx_buffer, data_len);
+        payload_to_check[data_len] = '\0';
+
+        // Obliczamy lokalne CRC
+        uint8_t local_crc = Compute_CRC8((uint8_t*)payload_to_check, data_len);
+
+        // Odczytujemy odebrane CRC
+        sscanf(last_semicolon + 1, "%02X", &received_crc);
+
+        // WERYFIKACJA
+        if (local_crc == (uint8_t)received_crc) {
+            // Dane poprawne -> parsujemy wartości
+            if (sscanf(payload_to_check, "%f;%f;%f", &t_rx, &s_rx, &d_rx) == 3) {
+            	char udp_msg[64];
+            	      int len = snprintf(
+            	          udp_msg,
+            	          sizeof(udp_msg),
+            	          "%.2f;%.2f;%.2f",
+            	          t_rx, s_rx, d_rx
+            	      );
+
+            	      struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
+            	      if (p != NULL) {
+            	          memcpy(p->payload, udp_msg, len);
+            	          udp_send(udp_client, p);
+            	          pbuf_free(p);
+            	      }
+
+                HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
+            }
+        } else {
+            // Błąd CRC - ignorujemy paczkę
+            HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+        }
     }
 
     HAL_UART_Receive_IT(&huart6, rx_buffer, RX_LEN);
   }
 }
-
 
 /* USER CODE END 0 */
 
@@ -142,7 +182,7 @@ int main(void)
 
   IP4_ADDR(&laptop_ip, 169, 254, 15, 184);
 
-  // Utworzenie gniazda UDP
+  // Utworzenie UDP
   udp_client = udp_new();
   udp_connect(udp_client, &laptop_ip, 1234);
 
