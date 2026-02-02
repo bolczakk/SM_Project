@@ -2,7 +2,14 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
+  * @brief          : UART-to-UDP Bridge for Sensor Data Telemetry.body
+  * (USART6) and an Ethernet network. It performs the following:
+  * - Receives data packets from the fan controller via UART.
+  * - Validates data integrity using a CRC8 checksum.
+  * - Parses floating-point values (Temperature, Setpoint, Duty).
+  * - Forwards the validated data as UDP packets using the LwIP stack.
+  * @author         : Oleg Swierblewski
+  * @date           : 2026
   ******************************************************************************
   * @attention
   *
@@ -54,13 +61,20 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 
-#define RX_LEN 20
-uint8_t rx_buffer[RX_LEN + 1];
-float t_rx, s_rx, d_rx;
+/** @defgroup Gateway_State_Variables Network & Buffer Variables
+ * @brief Variables managing data reception and network communication.
+ * @{ */
 
-/* --- UDP --- */
-struct udp_pcb *udp_client;
-ip_addr_t laptop_ip;
+#define RX_LEN 20
+uint8_t rx_buffer[RX_LEN + 1];  /**< Buffer for incoming UART telemetry frames. */
+float t_rx;                     /**< Extracted Temperature value from UART. */
+float s_rx;                     /**< Extracted Setpoint value from UART. */
+float d_rx;                     /**< Extracted PWM Duty Cycle value from UART. */
+
+struct udp_pcb *udp_client;     /**< UDP Protocol Control Block for LwIP. */
+ip_addr_t laptop_ip;            /**< Destination IP address for the UDP telemetry. */
+
+/** @} */
 
 /* USER CODE END PV */
 
@@ -76,6 +90,14 @@ static void MX_USART6_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/**
+ * @brief Calculates the CRC8 checksum for incoming data verification.
+ * @details Uses polynomial 0x07. This must match the algorithm used by 
+ * the transmitting device to ensure successful validation.
+ * @param data: Pointer to the received payload.
+ * @param len: Number of bytes to process.
+ * @return Computed 8-bit checksum.
+ */
 uint8_t Compute_CRC8(uint8_t *data, uint16_t len) {
     uint8_t crc = 0x00;
     for (uint16_t i = 0; i < len; i++) {
@@ -91,6 +113,18 @@ uint8_t Compute_CRC8(uint8_t *data, uint16_t len) {
     return crc;
 }
 
+/**
+ * @brief UART Reception Complete Callback.
+ * @details This is the core processing logic of the gateway:
+ * 1. Appends null terminator to the @ref rx_buffer.
+ * 2. Locates the CRC delimiter (';').
+ * 3. Verifies @ref Compute_CRC8 against the received checksum.
+ * 4. If valid, parses the string and encapsulates it into an LwIP **pbuf**.
+ * 5. Dispatches the **pbuf** to @ref laptop_ip via UDP.
+ * 6. Toggles LD1 on success or sets LD3 on CRC error.
+ * 7. Restarts the UART Interrupt reception.
+ * @param huart: Pointer to the UART handle (USART6).
+ */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart->Instance == USART6) {
 	  rx_buffer[RX_LEN] = '\0';
@@ -101,21 +135,20 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     char *last_semicolon = strrchr((char*)rx_buffer, ';');
 
     if (last_semicolon != NULL) {
-        // Obliczamy długość części z danymi (wszystko przed ostatnim średnikiem)
         int data_len = last_semicolon - (char*)rx_buffer;
 
         strncpy(payload_to_check, (char*)rx_buffer, data_len);
         payload_to_check[data_len] = '\0';
 
-        // Obliczamy lokalne CRC
+        // Count local CRC
         uint8_t local_crc = Compute_CRC8((uint8_t*)payload_to_check, data_len);
 
-        // Odczytujemy odebrane CRC
+        // Read CRC
         sscanf(last_semicolon + 1, "%02X", &received_crc);
 
-        // WERYFIKACJA
+        // Verify
         if (local_crc == (uint8_t)received_crc) {
-            // Dane poprawne -> parsujemy wartości
+            // Pass
             if (sscanf(payload_to_check, "%f;%f;%f", &t_rx, &s_rx, &d_rx) == 3) {
             	char udp_msg[64];
             	      int len = snprintf(
@@ -135,7 +168,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
                 HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
             }
         } else {
-            // Błąd CRC - ignorujemy paczkę
+            // CRC Error
             HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
         }
     }
