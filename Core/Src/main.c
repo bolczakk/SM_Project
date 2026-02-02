@@ -2,7 +2,13 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
+  * @brief          : Main program body, Fan Control System with PID Regulation and OLED Interface.
+  * * It features two operating modes:
+  * - Automatic: Temperature regulated via a PID controller.
+  * - Manual: Direct PWM duty cycle control via a rotary encoder.
+  * Telemetry data is broadcasted over USART1 with a CRC8 checksum for integrity.
+  * @author         : Oleg Swierblewski, Dawid Sobieska
+  * @date           : 02.02.2026
   ******************************************************************************
   * @attention
   *
@@ -59,12 +65,14 @@ UART_HandleTypeDef huart1;
 PWM_Handle_TypeDef fan_pwm;
 PID_Controller fanPID;
 
-volatile float duty = 30.0f;
-volatile uint32_t last_interrupt_time = 0;
-volatile float temperature;
-float setpoint = 25.0f;
-uint32_t transmit_counter = 0;
-_Bool manual = 0;
+/** @defgroup System_State_Variables System State Variables
+ * @brief Core variables managing the system's physical state and control logic.
+ * @{ */
+volatile float duty = 30.0f;          /**< Current PWM duty cycle (0.0% to 100.0%). */
+volatile float temperature;           /**< Real-time temperature reading from DS18B20 sensor. */
+float setpoint = 25.0f;               /**< Target temperature for the PID controller in Auto mode. */
+_Bool manual = 0;                     /**< Operational mode flag: 0 = Automatic (PID), 1 = Manual (PWM). */
+/** @} */
 
 unsigned int last_encoder_val = 0;
 
@@ -86,6 +94,13 @@ static void MX_TIM1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/**
+ * @brief Calculates a 8-bit Cyclic Redundancy Check (CRC8).
+ * @details Uses the polynomial 0x07 (CRC-8-CCITT). Ensures data integrity for UART transmission.
+ * @param data: Pointer to the data array.
+ * @param len: Length of the data in bytes.
+ * @return Calculated CRC8 checksum.
+ */
 uint8_t Compute_CRC8(uint8_t *data, uint16_t len) {
     uint8_t crc = 0x00;
     for (uint16_t i = 0; i < len; i++) {
@@ -101,6 +116,12 @@ uint8_t Compute_CRC8(uint8_t *data, uint16_t len) {
     return crc;
 }
 
+/**
+ * @brief External Interrupt Callback for user input.
+ * @details Handles the mode toggle (Manual/Auto) when the BTN_Pin is pressed.
+ * Implements a 300ms software debounce timer.
+ * @param GPIO_Pin: The pin that triggered the interrupt.
+ */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if(GPIO_Pin == BTN_Pin)
@@ -121,6 +142,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
   }
 }
 
+/**
+ * @brief Renders the User Interface on the SSD1306 OLED display.
+ * @details Dynamically updates the screen based on the @ref manual flag.
+ * - In **Manual mode**: Focuses on showing the PWM duty cycle.
+ * - In **Auto mode**: Highlights the Target Setpoint and Current Temperature.
+ * @param bufor: Temporary character buffer for string formatting.
+ */
 void renderScreen(char *bufor){
 	ssd1306_Fill(Black);
 	ssd1306_SetCursor(115, 0);
@@ -218,7 +246,7 @@ int main(void)
   fan_pwm.Duty = duty;
 
   PWM_Init(&fan_pwm);
-  //nie zmieniac kolejnosci
+  //DO NOT CHANGE ORDER
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
   HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
 
